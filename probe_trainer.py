@@ -222,7 +222,7 @@ class LinearProbeTrainer:
         for alpha in self.alpha_grid:
             pipe = Pipeline([
                 ("scaler", StandardScaler()),
-                ("ridge",  Ridge(alpha=alpha, fit_intercept=True)),
+                ("ridge",  Ridge(alpha=alpha, fit_intercept=True, solver = "svd")),
             ])
             pipe.fit(X_tr, y_tr)
             r2 = r2_score(y_va, pipe.predict(X_va))
