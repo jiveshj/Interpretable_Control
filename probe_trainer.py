@@ -148,7 +148,7 @@ class LinearProbeTrainer:
         n = len(gt_distance)
         idx_tr, idx_va, idx_te = split_indices(n, self.train_frac, self.val_frac, self.seed)
 
-        log_distance = np.log1p(gt_distance)  # log(1 + d) is always positive
+        log_distance = np.log1p(gt_distance)  # log(1 + d) is always non-negative
 
         results = ProbeSweepResults()
 
