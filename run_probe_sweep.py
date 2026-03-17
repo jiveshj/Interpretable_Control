@@ -104,12 +104,12 @@ def main():
     print(f"  Mean gap (coarse - exact):      {mean_gap:+.3f}")
 
     if mean_gap > 0.05:
-        print("\n  ✅ SUPPORTS hypothesis: coarse distance is easier to recover")
+        print("\n  SUPPORTS hypothesis: coarse distance is easier to recover")
         print("     than exact metric distance across most layers.")
     elif mean_gap > -0.05:
-        print("\n  ➖ INCONCLUSIVE: no strong difference between exact and coarse.")
+        print("\n  INCONCLUSIVE: no strong difference between exact and coarse.")
     else:
-        print("\n  ❌ CONTRADICTS hypothesis: exact distance is encoded as well as coarse.")
+        print("\n  CONTRADICTS hypothesis: exact distance is encoded as well as coarse.")
 
     # ── 5. Save numeric results ──────────────────────────────────────────────
     out_dir = Path(args.output_dir)
