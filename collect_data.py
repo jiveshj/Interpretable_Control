@@ -152,15 +152,17 @@ def setup_carla(host: str = "localhost", port: int = 2000, town: str = "Town01")
     client = carla.Client(host, port)
     client.set_timeout(30.0)
     print(f"Connected to CARLA {client.get_server_version()}")
-
-    world = client.load_world(town)
+    world = client.get_world()  # get world reference after loading new map
     settings = world.get_settings()
-    settings.synchronous_mode    = True   # Python controls the tick
-    settings.fixed_delta_seconds = 0.05   # 20 Hz
+    settings.synchronous_mode = False   # Not sure about this
+    settings.fixed_delta_seconds = 0.0  
     world.apply_settings(settings)
 
     traffic_manager = client.get_trafficmanager(8000)
-    traffic_manager.set_synchronous_mode(True)
+    traffic_manager.set_synchronous_mode(False)
+    # traffic_manager.set_global_distance_to_leading_vehicle(2.0)  # NPCs follow closely for more distance variety
+    # traffic_manager.global_percentage_speed_difference(20.0)  # slow NPCs down
+
 
     return client, world, traffic_manager
 
@@ -205,24 +207,23 @@ def spawn_lidar(world, vehicle):
     return lidar
 
 
-def get_nearest_vehicle_distance(world, ego_vehicle) -> float:
+def get_nearest_vehicle_distance(npc_vehicles, ego_vehicle) -> float:
     """
     Ground truth: Euclidean distance from ego to nearest other vehicle.
     Uses CARLA's scene graph — exact, no sensor noise.
     Returns 999.0 if no other vehicles are present.
     """
-    ego_loc  = ego_vehicle.get_location()
-    vehicles = world.get_actors().filter("vehicle.*")
-
+    ego_loc = ego_vehicle.get_location()
     min_dist = 999.0
-    for v in vehicles:
-        if v.id == ego_vehicle.id:
+    for v in npc_vehicles:
+        if not v.is_alive:
             continue
-        dist = ego_loc.distance(v.get_location())
+        loc = v.get_location()
+        dist = ego_loc.distance(loc)
         if dist < min_dist:
             min_dist = dist
-
     return min_dist
+
 
 
 def preprocess_rgb(image_carla) -> torch.Tensor:
@@ -309,15 +310,21 @@ def collect(args):
             world.get_blueprint_library().filter("vehicle.*"))
         npc = world.try_spawn_actor(npc_bp, sp)
         if npc:
-            npc.set_autopilot(True, traffic_manager.get_port())
-            npc_vehicles.append(npc)
+            try:
+                npc.set_autopilot(True, traffic_manager.get_port())
+                npc_vehicles.append(npc)
+            except RuntimeError:
+                pass
     print(f"Spawned {len(npc_vehicles)} NPC vehicles")
 
     # Spawn ego vehicle + sensors
     ego    = spawn_ego_vehicle(world)
+    ego.set_autopilot(True, traffic_manager.get_port())
+    print("Warming up simulation (3 seconds)...")
+    time.sleep(3.0)
+
     camera = spawn_rgb_camera(world, ego)
     lidar  = spawn_lidar(world, ego)
-    ego.set_autopilot(True, traffic_manager.get_port())
 
     # Sensor data queues
     rgb_queue   = []
@@ -328,24 +335,32 @@ def collect(args):
     # ── 4. Collection loop ───────────────────────────────────────────────────
     print(f"\n── Collecting {args.n_steps} steps in {args.town} ──\n")
 
+    # Let world run for a bit before collecting
+    time.sleep(3.0)
+
+
     gt_distances = []
     step = 0
 
     try:
         while step < args.n_steps:
-            world.tick()
+            time.sleep(0.1) #~10Hz collection rate
             if not is_alive(ego):
                 print("Ego vehicle destroyed, ending collection")
                 break
+            
+            # Prune dead NPCs to keep the distance query fast and safe
+            npc_vehicles = [v for v in npc_vehicles if v.is_alive]
+
 
             if not rgb_queue or not lidar_queue:
                 continue
 
-            rgb_data   = rgb_queue.pop(0)
-            lidar_data = lidar_queue.pop(0)
+            rgb_data   = rgb_queue[-1]; rgb_queue.clear()
+            lidar_data = lidar_queue[-1]; lidar_queue.clear()
 
             # Ground truth distance from scene graph
-            gt_dist = get_nearest_vehicle_distance(world, ego)
+            gt_dist = get_nearest_vehicle_distance(npc_vehicles,ego)
             if gt_dist > 80.0:
                 # Skip timesteps with no nearby vehicles — not useful for probing
                 continue
@@ -361,9 +376,7 @@ def collect(args):
 
             if step % 100 == 0:
                 print(f"  Step {step}/{args.n_steps}  "
-                      f"gt_dist={gt_dist:.1f}m  "
-                      f"layers={list(activation_buffer.keys())[:3]}...")
-
+                      f"gt_dist={gt_dist:.1f}m  ")
     finally:
         # ── 5. Clean up ──────────────────────────────────────────────────────
         for h in hook_handles:
@@ -377,9 +390,9 @@ def collect(args):
                 npc.destroy()
 
         # Restore async mode
-        settings = world.get_settings()
-        settings.synchronous_mode = False
-        world.apply_settings(settings)
+        # settings = world.get_settings()
+        # settings.synchronous_mode = False
+        # world.apply_settings(settings)
         print("\nCARLA cleaned up.")
 
     # ── 6. Save to HDF5 ──────────────────────────────────────────────────────
@@ -423,8 +436,8 @@ def parse_args():
                    help="Number of timesteps to collect (default: 5000)")
     p.add_argument("--town",         default="Town01",
                    help="CARLA town to use (default: Town01)")
-    p.add_argument("--n-npc",        type=int, default=50,
-                   help="Number of NPC vehicles to spawn (default: 50)")
+    p.add_argument("--n-npc",        type=int, default=20,
+                   help="Number of NPC vehicles to spawn (default: 20)")
     p.add_argument("--host",         default="localhost")
     p.add_argument("--port",         type=int, default=2000)
     p.add_argument("--print-model",  action="store_true",
