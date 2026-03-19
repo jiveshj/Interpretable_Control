@@ -70,11 +70,6 @@ def register_hooks(model: torch.nn.Module) -> Tuple[Dict, List]:
     -------
     buffer : dict  {layer_name: list of activation arrays}
     handles: list of hook handles (call handle.remove() to clean up)
-
-    Layer naming convention matches the mock data in data_utils.py:
-        image_encoder.layer{1,2,3,4}   ← RegNet image encoder stages
-        lidar_encoder.layer{1,2,3,4}   ← RegNet lidar encoder stages
-        transformer.block{0,1,2,3}     ← Transformer fusion blocks
     """
     buffer  = defaultdict(list)
     handles = []
@@ -93,12 +88,13 @@ def register_hooks(model: torch.nn.Module) -> Tuple[Dict, List]:
                 out = out.mean(dim=1)
             buffer[name].append(out.detach().cpu().float().numpy())
         return hook
+    
+    backbone = model._model  # TransfuserBackbone
 
     # ── Image encoder (RegNet stages) ────────────────────────────────────────
-    # RegNet in timm has s1, s2, s3, s4 stages
     for i, stage_name in enumerate(["s1", "s2", "s3", "s4"]):
         try:
-            layer = getattr(model.image_encoder, stage_name)
+            layer = getattr(backbone.image_encoder.features, stage_name)
             h = layer.register_forward_hook(make_hook(f"img_enc.stage{i+1}"))
             handles.append(h)
             print(f"  Hooked: img_enc.stage{i+1}")
@@ -108,22 +104,22 @@ def register_hooks(model: torch.nn.Module) -> Tuple[Dict, List]:
     # ── Lidar encoder (same RegNet structure) ─────────────────────────────────
     for i, stage_name in enumerate(["s1", "s2", "s3", "s4"]):
         try:
-            layer = getattr(model.lidar_encoder, stage_name)
+            layer = getattr(backbone.lidar_encoder._model, stage_name)
             h = layer.register_forward_hook(make_hook(f"lid_enc.stage{i+1}"))
             handles.append(h)
             print(f"  Hooked: lid_enc.stage{i+1}")
         except AttributeError:
             print(f"  Warning: lid_enc.{stage_name} not found, skipping")
 
-    # ── Transformer fusion blocks ─────────────────────────────────────────────
-    # TransFuser has n_layer=4 transformer blocks fusing image+lidar features
-    try:
-        for i, block in enumerate(model.transformer.layers):
-            h = block.register_forward_hook(make_hook(f"transformer.block{i}"))
+    # ── Transformer fusion blocks (4 separate GPT blocks, one per scale) ─────────────────────────────────────────────
+    for i in range(1,5):
+        try:
+            transformer = getattr(backbone, f"transformer{i}")
+            h = transformer.register_forward_hook(make_hook(f"transformer.block{i}"))
             handles.append(h)
             print(f"  Hooked: transformer.block{i}")
-    except AttributeError:
-        print("  Warning: model.transformer.layers not found")
+        except AttributeError:
+            print(f"  Warning: transformer.block{i} not found, skipping")
 
     return buffer, handles
 
