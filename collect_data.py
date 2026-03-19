@@ -50,6 +50,13 @@ from model import LidarCenterNet          # TransFuser model class
 from config import GlobalConfig           # TransFuser config
 
 
+def is_alive(actor) -> bool:
+    try:
+        return actor is not None and actor.is_alive
+    except RuntimeError:
+        return False
+
+
 # ── Distance bucketing (mirrors data_utils.py) ───────────────────────────────
 DISTANCE_BINS = [0.0, 5.0, 15.0, 40.0, np.inf]
 
@@ -115,11 +122,11 @@ def register_hooks(model: torch.nn.Module) -> Tuple[Dict, List]:
     for i in range(1,5):
         try:
             transformer = getattr(backbone, f"transformer{i}")
-            h = transformer.register_forward_hook(make_hook(f"transformer.block{i}"))
+            h = transformer.register_forward_hook(make_hook(f"transformer{i}"))
             handles.append(h)
-            print(f"  Hooked: transformer.block{i}")
+            print(f"  Hooked: transformer{i}")
         except AttributeError:
-            print(f"  Warning: transformer.block{i} not found, skipping")
+            print(f"  Warning: transformer{i} not found, skipping")
 
     return buffer, handles
 
@@ -327,6 +334,9 @@ def collect(args):
     try:
         while step < args.n_steps:
             world.tick()
+            if not is_alive(ego):
+                print("Ego vehicle destroyed, ending collection")
+                break
 
             if not rgb_queue or not lidar_queue:
                 continue
@@ -360,9 +370,11 @@ def collect(args):
             h.remove()
         camera.stop(); camera.destroy()
         lidar.stop();  lidar.destroy()
-        ego.destroy()
+        if is_alive(ego):
+            ego.destroy()
         for npc in npc_vehicles:
-            npc.destroy()
+            if is_alive(npc):
+                npc.destroy()
 
         # Restore async mode
         settings = world.get_settings()
