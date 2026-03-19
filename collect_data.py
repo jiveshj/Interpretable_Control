@@ -26,6 +26,7 @@ import h5py
 import torch
 from pathlib import Path
 from collections import defaultdict
+from typing import Dict, List, Tuple, Optional, Any
 
 # ── CARLA + TransFuser imports ───────────────────────────────────────────────
 # These are available after activating tfuse env and setting PYTHONPATH
@@ -61,7 +62,7 @@ def bucket_distance(d: float) -> int:
 
 # ── Hook registration ────────────────────────────────────────────────────────
 
-def register_hooks(model: torch.nn.Module) -> tuple[dict, list]:
+def register_hooks(model: torch.nn.Module) -> Tuple[Dict, List]:
     """
     Register forward hooks on TransFuser's key layers.
 
