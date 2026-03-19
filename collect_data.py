@@ -269,7 +269,7 @@ def preprocess_lidar(lidar_carla) -> torch.Tensor:
 def collect(args):
     # ── 1. Load TransFuser ───────────────────────────────────────────────────
     print("\n── Loading TransFuser ──")
-    config = GlobalConfig()
+    config = GlobalConfig(setting = 'eval')
     model  = LidarCenterNet(config, "cuda", backbone="transFuser",
                             image_architecture="regnety_032",
                             lidar_architecture="regnety_032",
