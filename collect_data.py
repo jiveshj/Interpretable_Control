@@ -27,9 +27,9 @@ import torch
 from pathlib import Path
 from collections import defaultdict
 from typing import Dict, List, Tuple, Optional, Any
-
+import cv2
+from PIL import Image
 # ── CARLA + TransFuser imports ───────────────────────────────────────────────
-# These are available after activating tfuse env and setting PYTHONPATH
 try:
     import carla
 except ImportError:
@@ -48,6 +48,37 @@ sys.path.insert(0, str(TRANSFUSER_ROOT / "team_code_transfuser"))
 
 from model import LidarCenterNet          # TransFuser model class
 from config import GlobalConfig           # TransFuser config
+from data import scale_image_cv2, crop_image_cv2, lidar_to_histogram_features
+from copy import deepcopy
+
+#This is directly taken from the transfuser repo. 
+def scale_crop(image, scale=1, start_x=0, crop_x=None, start_y=0, crop_y=None):
+        (width, height) = (image.width // scale, image.height // scale)
+        if scale != 1:
+            image = image.resize((width, height))
+        if crop_x is None:
+            crop_x = width
+        if crop_y is None:
+            crop_y = height
+            
+        image = np.asarray(image)
+        cropped_image = image[start_y:start_y+crop_y, start_x:start_x+crop_x]
+        return cropped_image
+
+#This is also directly taken from the transfuser repo. 
+def shift_x_scale_crop(image, scale, crop, crop_shift=0):
+    crop_h, crop_w = crop
+    (width, height) = (int(image.width // scale), int(image.height // scale))
+    im_resized = image.resize((width, height))
+    image = np.array(im_resized)
+    start_y = height//2 - crop_h//2
+    start_x = width//2 - crop_w//2
+    
+    # only shift in x direction
+    start_x += int(crop_shift // scale)
+    cropped_image = image[start_y:start_y+crop_h, start_x:start_x+crop_w]
+    cropped_image = np.transpose(cropped_image, (2,0,1))
+    return cropped_image
 
 
 def is_alive(actor) -> bool:
@@ -153,18 +184,18 @@ def setup_carla(host: str = "localhost", port: int = 2000, town: str = "Town01")
     client.set_timeout(30.0)
     print(f"Connected to CARLA {client.get_server_version()}")
     world = client.get_world()  # get world reference after loading new map
-    settings = world.get_settings()
-    settings.synchronous_mode = False   # Not sure about this
-    settings.fixed_delta_seconds = 0.0  
-    world.apply_settings(settings)
+    # settings = world.get_settings()
+    # settings.synchronous_mode = False   # Not sure about this
+    # settings.fixed_delta_seconds = 0.0  
+    # world.apply_settings(settings)
 
-    traffic_manager = client.get_trafficmanager(8000)
-    traffic_manager.set_synchronous_mode(False)
+    # traffic_manager = client.get_trafficmanager(8000)
+    # traffic_manager.set_synchronous_mode(False)
     # traffic_manager.set_global_distance_to_leading_vehicle(2.0)  # NPCs follow closely for more distance variety
     # traffic_manager.global_percentage_speed_difference(20.0)  # slow NPCs down
+    print("Set up CARLA")
 
-
-    return client, world, traffic_manager
+    return client, world
 
 
 def spawn_ego_vehicle(world):
@@ -180,30 +211,24 @@ def spawn_ego_vehicle(world):
     return vehicle
 
 
-def spawn_rgb_camera(world, vehicle):
-    """Attach a front-facing RGB camera to the ego vehicle."""
-    bp_lib    = world.get_blueprint_library()
-    camera_bp = bp_lib.find("sensor.camera.rgb")
-    camera_bp.set_attribute("image_size_x", "900")
-    camera_bp.set_attribute("image_size_y", "256")
-    camera_bp.set_attribute("fov",          "100")
+def spawn_cameras(world,vehicle,config):
+    bp_lib = world.get_blueprint_library()
+    cameras = {}
+    for cam_id, rot in [('rgb_left', config.camera_rot_1), ('rgb_front', config.camera_rot_0), ('rgb_right', config.camera_rot_2)]:
+        cam_bp = bp_lib.find("sensor.camera.rgb")
+        cam_bp.set_attribute("image_size_x", str(config.img_width))
+        cam_bp.set_attribute("image_size_y", str(config.img_resolution[0]))
+        cam_bp.set_attribute("fov", str(config.camera_fov))
+        transform = carla.Transform(carla.Location(x=config.camera_pos[0], y = config.camera_pos[1], z = config.camera_pos[2]),carla.Rotation(roll=rot[0], pitch=rot[1], yaw=rot[2]))
+        cameras[cam_id] = world.spawn_actor(cam_bp, transform, attach_to=vehicle)
+    return cameras
 
-    transform = carla.Transform(carla.Location(x=1.5, z=2.4))
-    camera    = world.spawn_actor(camera_bp, transform, attach_to=vehicle)
-    return camera
-
-
-def spawn_lidar(world, vehicle):
+def spawn_lidar(world, vehicle,config):
     """Attach a LiDAR sensor to the ego vehicle."""
     bp_lib   = world.get_blueprint_library()
     lidar_bp = bp_lib.find("sensor.lidar.ray_cast")
-    lidar_bp.set_attribute("range",             "50")
-    lidar_bp.set_attribute("rotation_frequency","10")
-    lidar_bp.set_attribute("channels",          "32")
-    lidar_bp.set_attribute("points_per_second", "300000")
-
-    transform = carla.Transform(carla.Location(x=0.0, z=2.5))
-    lidar     = world.spawn_actor(lidar_bp, transform, attach_to=vehicle)
+    transform = carla.Transform(carla.Location(x=config.lidar_pos[0], y = config.lidar_pos[1], z = config.lidar_pos[2]),carla.Rotation(roll=config.lidar_rot[0], pitch=config.lidar_rot[1], yaw=config.lidar_rot[2]))
+    lidar = world.spawn_actor(lidar_bp, transform, attach_to=vehicle)
     return lidar
 
 
@@ -226,46 +251,51 @@ def get_nearest_vehicle_distance(npc_vehicles, ego_vehicle) -> float:
 
 
 
-def preprocess_rgb(image_carla) -> torch.Tensor:
-    """Convert CARLA RGB image to a normalised (1, 3, H, W) tensor."""
-    import cv2
+def preprocess_rgb(left_raw, front_raw, right_raw, config) -> torch.Tensor:
+    rgb = []
+    for img_raw in [left_raw, front_raw, right_raw]:
+        img_pil = Image.fromarray(cv2.cvtColor(img_raw[:,:,:3], cv2.COLOR_BGR2RGB))
+        cropped = scale_crop(img_pil, scale=config.scale, crop_x=config.img_width, crop_y=config.img_resolution[0])
+        rgb.append(cropped)
+    rgb = np.concatenate(rgb, axis=1)  # matches tick() concatenation
+    image = Image.fromarray(rgb)
+    tensor_np = shift_x_scale_crop(image, scale=config.scale, crop=config.img_resolution, crop_shift=0)
+    return torch.from_numpy(tensor_np.copy()).unsqueeze(0).to('cuda', dtype=torch.float32)
+
+def carla_img_to_numpy(image_carla):
     array = np.frombuffer(image_carla.raw_data, dtype=np.uint8)
-    array = array.reshape((image_carla.height, image_carla.width, 4))
-    rgb   = array[:, :, :3][:, :, ::-1].copy()  # BGRA → RGB
-
-    # Resize to 256x256 (TransFuser input resolution)
-    rgb   = cv2.resize(rgb, (256, 256))
-    rgb   = rgb.astype(np.float32) / 255.0
-
-    tensor = torch.from_numpy(rgb).permute(2, 0, 1).unsqueeze(0)  # (1,3,H,W)
-    return tensor.cuda()
+    return array.reshape((image_carla.height, image_carla.width, 4))[:, :, :3]  # drop alpha
 
 
 def preprocess_lidar(lidar_carla) -> torch.Tensor:
-    """
-    Convert CARLA LiDAR point cloud to a BEV (bird's eye view) image tensor.
-    This is a simplified version — TransFuser uses a more elaborate BEV encoding.
-    """
-    points = np.frombuffer(lidar_carla.raw_data, dtype=np.float32)
-    points = points.reshape((-1, 4))[:, :3]   # (N, 3) — drop intensity
+    # """
+    # Convert CARLA LiDAR point cloud to a BEV (bird's eye view) image tensor.
+    # This is a simplified version — TransFuser uses a more elaborate BEV encoding.
+    # """
+    # points = np.frombuffer(lidar_carla.raw_data, dtype=np.float32)
+    # points = points.reshape((-1, 4))[:, :3]   # (N, 3) — drop intensity
 
-    # Project to 2D BEV grid (256x256, ±50m range)
-    bev_size = 256
-    bev_range = 50.0
+    # # Project to 2D BEV grid (256x256, ±50m range)
+    # bev_size = 256
+    # bev_range = 50.0
 
-    bev = np.zeros((bev_size, bev_size), dtype=np.float32)
-    x_idx = ((points[:, 0] + bev_range) / (2 * bev_range) * bev_size).astype(int)
-    y_idx = ((points[:, 1] + bev_range) / (2 * bev_range) * bev_size).astype(int)
+    # bev = np.zeros((bev_size, bev_size), dtype=np.float32)
+    # x_idx = ((points[:, 0] + bev_range) / (2 * bev_range) * bev_size).astype(int)
+    # y_idx = ((points[:, 1] + bev_range) / (2 * bev_range) * bev_size).astype(int)
 
-    mask  = (x_idx >= 0) & (x_idx < bev_size) & (y_idx >= 0) & (y_idx < bev_size)
-    bev[y_idx[mask], x_idx[mask]] = 1.0
+    # mask  = (x_idx >= 0) & (x_idx < bev_size) & (y_idx >= 0) & (y_idx < bev_size)
+    # bev[y_idx[mask], x_idx[mask]] = 1.0
 
-    # TransFuser expects 2-channel BEV; duplicate for simplicity
-    bev_tensor = torch.from_numpy(
-        np.stack([bev, bev], axis=0)
-    ).unsqueeze(0).cuda()   # (1, 2, 256, 256)
+    # # TransFuser expects 2-channel BEV; duplicate for simplicity
+    # bev_tensor = torch.from_numpy(
+    #     np.stack([bev, bev], axis=0)
+    # ).unsqueeze(0).cuda()   # (1, 2, 256, 256)
+    points = np.frombuffer(lidar_carla.raw_data, dtype=np.float32).reshape(-1,4)
+    lidar = deepcopy(points[:,:3])
+    lidar[:,1] *= -1
+    bev_tensor = lidar_to_histogram_features(lidar)
+    return torch.from_numpy(bev_tensor).unsqueeze(0).to('cuda', dtype=torch.float32)   # (1, 8, 256, 256)
 
-    return bev_tensor
 
 
 # ── Main collection loop ──────────────────────────────────────────────────────
@@ -298,39 +328,42 @@ def collect(args):
 
     # ── 3. Connect to CARLA ──────────────────────────────────────────────────
     print("\n── Connecting to CARLA ──")
-    client, world, traffic_manager = setup_carla(
+    client, world = setup_carla(
         host=args.host, port=args.port, town=args.town)
-
+    print("in main loop after setup carla")
     # Spawn some NPC vehicles so there are objects to measure distance to
     npc_vehicles = []
     spawn_points = world.get_map().get_spawn_points()
+    print("after spawn points")
     np.random.shuffle(spawn_points)
     for sp in spawn_points[:args.n_npc]:
         npc_bp = np.random.choice(
             world.get_blueprint_library().filter("vehicle.*"))
+        print("after npc_bp")
         npc = world.try_spawn_actor(npc_bp, sp)
+        print("after npc")
         if npc:
-            try:
-                npc.set_autopilot(True, traffic_manager.get_port())
-                npc_vehicles.append(npc)
-            except RuntimeError:
-                pass
+            npc.apply_control(carla.VehicleControl(throttle=0.4, steer=0.0))
+            npc_vehicles.append(npc)
+
     print(f"Spawned {len(npc_vehicles)} NPC vehicles")
 
     # Spawn ego vehicle + sensors
     ego    = spawn_ego_vehicle(world)
-    ego.set_autopilot(True, traffic_manager.get_port())
+    ego.apply_control(carla.VehicleControl(throttle=0.4, steer=0.0))
     print("Warming up simulation (3 seconds)...")
     time.sleep(3.0)
 
-    camera = spawn_rgb_camera(world, ego)
-    lidar  = spawn_lidar(world, ego)
+    cameras = spawn_cameras(world, ego, config)
+    lidar  = spawn_lidar(world, ego, config)
 
     # Sensor data queues
-    rgb_queue   = []
+    rgb_queues = {cam_id: [] for cam_id in cameras}
     lidar_queue = []
-    camera.listen(lambda data: rgb_queue.append(data))
+    for cam_id, cam in cameras.items():
+        cam.listen(lambda data, cid=cam_id: rgb_queues[cid].append(data))
     lidar.listen(lambda data: lidar_queue.append(data))
+
 
     # ── 4. Collection loop ───────────────────────────────────────────────────
     print(f"\n── Collecting {args.n_steps} steps in {args.town} ──\n")
@@ -341,48 +374,66 @@ def collect(args):
 
     gt_distances = []
     step = 0
-
+    total_ticks = 0
     try:
         while step < args.n_steps:
             time.sleep(0.1) #~10Hz collection rate
+            total_ticks += 1
             if not is_alive(ego):
                 print("Ego vehicle destroyed, ending collection")
                 break
             
             # Prune dead NPCs to keep the distance query fast and safe
             npc_vehicles = [v for v in npc_vehicles if v.is_alive]
+            # Keep vehicles moving
+            if step % 20 == 0:
+                if is_alive(ego):
+                    ego.apply_control(carla.VehicleControl(throttle=0.5, steer=0.0))
+                for v in npc_vehicles:
+                    v.apply_control(carla.VehicleControl(throttle=0.4, steer=0.0))
 
 
-            if not rgb_queue or not lidar_queue:
+            if not all(rgb_queues[c] for c in rgb_queues) or not lidar_queue:
                 continue
-
-            rgb_data   = rgb_queue[-1]; rgb_queue.clear()
+            
+            left = rgb_queues['rgb_left'][-1]; rgb_queues['rgb_left'].clear()
+            front = rgb_queues['rgb_front'][-1]; rgb_queues['rgb_front'].clear()
+            right = rgb_queues['rgb_right'][-1]; rgb_queues['rgb_right'].clear()
+            left_raw = carla_img_to_numpy(left)
+            front_raw = carla_img_to_numpy(front)
+            right_raw = carla_img_to_numpy(right)
+            rgb_tensor = preprocess_rgb(left_raw, front_raw, right_raw,config)
             lidar_data = lidar_queue[-1]; lidar_queue.clear()
-
+            lidar_tensor = preprocess_lidar(lidar_data)
             # Ground truth distance from scene graph
             gt_dist = get_nearest_vehicle_distance(npc_vehicles,ego)
-            if gt_dist > 80.0:
-                # Skip timesteps with no nearby vehicles — not useful for probing
-                continue
+            # if gt_dist > 80.0:
+            #     # Skip timesteps with no nearby vehicles — not useful for probing
+            #     continue
+            gt_dist = min(gt_dist, 100.0)  # cap instead of filter
 
             # Forward pass (hooks fire here)
             with torch.no_grad():
-                rgb_tensor   = preprocess_rgb(rgb_data)
-                lidar_tensor = preprocess_lidar(lidar_data)
-                _ = model(rgb_tensor, lidar_tensor)
+                v = ego.get_velocity()
+                speed = np.sqrt(v.x**2 + v.y**2 + v.z**2)
+                ego_vel = torch.tensor([[speed]], dtype=torch.float32).to("cuda")
+                _ = model._model(rgb_tensor, lidar_tensor, ego_vel)
+
 
             gt_distances.append(gt_dist)
             step += 1
 
             if step % 100 == 0:
                 print(f"  Step {step}/{args.n_steps}  "
-                      f"gt_dist={gt_dist:.1f}m  ")
+                  f"gt_dist={gt_dist:.1f}m  "
+                  f"tick_efficiency={step/total_ticks:.1%}")
     finally:
         # ── 5. Clean up ──────────────────────────────────────────────────────
         for h in hook_handles:
             h.remove()
-        camera.stop(); camera.destroy()
         lidar.stop();  lidar.destroy()
+        for cam in cameras.values():
+            cam.stop();  cam.destroy()
         if is_alive(ego):
             ego.destroy()
         for npc in npc_vehicles:
