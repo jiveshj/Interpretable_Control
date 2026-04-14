@@ -255,7 +255,7 @@ def preprocess_rgb(left_raw, front_raw, right_raw, config) -> torch.Tensor:
     rgb = []
     for img_raw in [left_raw, front_raw, right_raw]:
         img_pil = Image.fromarray(cv2.cvtColor(img_raw[:,:,:3], cv2.COLOR_BGR2RGB))
-        cropped = scale_crop(img_pil, scale=config.scale, crop_x=config.img_width, crop_y=config.img_resolution[0])
+        cropped = scale_crop(img_pil, scale=config.scale, start_x=config.img_width, crop_x=config.img_width, start_y=config.img_resolution[0], crop_y=config.img_resolution[0])
         rgb.append(cropped)
     rgb = np.concatenate(rgb, axis=1)  # matches tick() concatenation
     image = Image.fromarray(rgb)
