@@ -23,7 +23,7 @@ from sklearn.metrics import r2_score, accuracy_score
 from sklearn.pipeline import Pipeline
 
 from data_utils import split_indices, bucket_distances, N_DISTANCE_BINS
-
+from typing import List
 
 # ── Result containers ────────────────────────────────────────────────────────
 
@@ -62,7 +62,7 @@ class ProbeSweepResults:
     layer_results: list = field(default_factory=list)
 
     @property
-    def layer_names(self) -> list[str]:
+    def layer_names(self) -> List[str]:
         return [r.layer_name for r in self.layer_results]
 
     @property
@@ -126,7 +126,7 @@ class LinearProbeTrainer:
         self.train_frac       = train_frac
         self.val_frac         = val_frac
         self.use_log_distance = use_log_distance
-        self.alpha_grid       = alpha_grid or [1e-3, 1e-2, 0.1, 1.0, 10.0, 100.0, 1000.0]
+        self.alpha_grid       = alpha_grid or [0.1, 1.0, 10.0]
         self.seed             = seed
 
     def run(
@@ -222,7 +222,7 @@ class LinearProbeTrainer:
         for alpha in self.alpha_grid:
             pipe = Pipeline([
                 ("scaler", StandardScaler()),
-                ("ridge",  Ridge(alpha=alpha, fit_intercept=True, solver = "svd")),
+                ("ridge",  Ridge(alpha=alpha, fit_intercept=True, solver = "lsqr")),
             ])
             pipe.fit(X_tr, y_tr)
             r2 = r2_score(y_va, pipe.predict(X_va))
