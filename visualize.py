@@ -18,7 +18,7 @@ from pathlib import Path
 
 from probe_trainer import ProbeSweepResults
 from data_utils import DISTANCE_LABELS
-
+from typing import Union, Optional
 
 # ── Style ────────────────────────────────────────────────────────────────────
 sns.set_theme(style="whitegrid", font_scale=1.1)
@@ -34,7 +34,7 @@ COLORS = {
 def plot_r2_vs_depth(
     results: ProbeSweepResults,
     title: str = "Linear Probe R² per Layer",
-    save_path: str | Path | None = None,
+    save_path: Optional[Union[str,Path]] = None,
     show: bool = True,
 ):
     """
@@ -96,7 +96,7 @@ def plot_r2_vs_depth(
 def plot_coarse_vs_exact(
     results: ProbeSweepResults,
     title: str = "Coarse vs. Exact Distance Encoding",
-    save_path: str | Path | None = None,
+    save_path: Optional[Union[str,Path]] = None,
     show: bool = True,
 ):
     """
@@ -151,7 +151,7 @@ def plot_coarse_vs_exact(
 
 def plot_mae_vs_depth(
     results: ProbeSweepResults,
-    save_path: str | Path | None = None,
+    save_path: Optional[Union[str,Path]] = None,
     show: bool = True,
 ):
     """MAE (meters) per layer — complementary to R² for interpretability."""
@@ -176,7 +176,7 @@ def plot_mae_vs_depth(
 def plot_distance_distribution(
     gt_distance: np.ndarray,
     gt_bins: np.ndarray,
-    save_path: str | Path | None = None,
+    save_path: Optional[Union[str,Path]] = None,
     show: bool = True,
 ):
     """Sanity check: show the distribution of distances in the dataset."""
@@ -209,7 +209,7 @@ def save_all_figures(
     results: ProbeSweepResults,
     gt_distance: np.ndarray,
     gt_bins: np.ndarray,
-    output_dir: str | Path = "figures",
+    output_dir: Union[str, Path] = "figures",
 ):
     """Convenience: save all four figures to a directory."""
     output_dir = Path(output_dir)
