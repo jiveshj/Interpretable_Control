@@ -29,6 +29,7 @@ from collections import defaultdict
 from typing import Dict, List, Tuple, Optional, Any
 import cv2
 from PIL import Image
+import random
 # ── CARLA + TransFuser imports ───────────────────────────────────────────────
 try:
     import carla
@@ -255,7 +256,7 @@ def preprocess_rgb(left_raw, front_raw, right_raw, config) -> torch.Tensor:
     rgb = []
     for img_raw in [left_raw, front_raw, right_raw]:
         img_pil = Image.fromarray(cv2.cvtColor(img_raw[:,:,:3], cv2.COLOR_BGR2RGB))
-        cropped = scale_crop(img_pil, scale=config.scale, start_x=config.img_width, crop_x=config.img_width, start_y=config.img_resolution[0], crop_y=config.img_resolution[0])
+        cropped = scale_crop(img_pil, scale=config.scale, crop_x=config.img_width, crop_y=config.img_resolution[0])
         rgb.append(cropped)
     rgb = np.concatenate(rgb, axis=1)  # matches tick() concatenation
     image = Image.fromarray(rgb)
@@ -331,28 +332,28 @@ def collect(args):
     client, world = setup_carla(
         host=args.host, port=args.port, town=args.town)
     print("in main loop after setup carla")
-    # Spawn some NPC vehicles so there are objects to measure distance to
+
+    # Spawn NPC vehicles so there are objects to measure distance to
     npc_vehicles = []
     spawn_points = world.get_map().get_spawn_points()
     print("after spawn points")
-    np.random.shuffle(spawn_points)
-    for sp in spawn_points[:args.n_npc]:
+    ego = spawn_ego_vehicle(world)
+    ego.apply_control(carla.VehicleControl(throttle=0.4, steer=0.0))
+    print("Warming up simulation (3 seconds)...")
+    time.sleep(3.0)
+    ego_loc = ego.get_location()
+    spawn_points_sorted = sorted(spawn_points, key=lambda sp: sp.location.distance(ego_loc))
+    for sp in spawn_points_sorted[:args.n_npc]:
         npc_bp = np.random.choice(
             world.get_blueprint_library().filter("vehicle.*"))
-        print("after npc_bp")
         npc = world.try_spawn_actor(npc_bp, sp)
-        print("after npc")
         if npc:
-            npc.apply_control(carla.VehicleControl(throttle=0.4, steer=0.0))
+            npc.apply_control(carla.VehicleControl(throttle=np.random.uniform(0.4,0.6), steer=0.0))
             npc_vehicles.append(npc)
 
     print(f"Spawned {len(npc_vehicles)} NPC vehicles")
 
-    # Spawn ego vehicle + sensors
-    ego    = spawn_ego_vehicle(world)
-    ego.apply_control(carla.VehicleControl(throttle=0.4, steer=0.0))
-    print("Warming up simulation (3 seconds)...")
-    time.sleep(3.0)
+    # Spawn sensors
 
     cameras = spawn_cameras(world, ego, config)
     lidar  = spawn_lidar(world, ego, config)
