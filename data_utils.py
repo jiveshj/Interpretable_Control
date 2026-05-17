@@ -15,6 +15,7 @@ Example layer names for TransFuser:
 import h5py
 import numpy as np
 from pathlib import Path
+from typing import Union, Dict, Tuple, Optional
 
 
 # ── Distance bucketing ──────────────────────────────────────────────────────
@@ -31,7 +32,7 @@ def bucket_distances(distances: np.ndarray) -> np.ndarray:
 
 # ── I/O ─────────────────────────────────────────────────────────────────────
 
-def load_dataset(path: str | Path) -> dict:
+def load_dataset(path: Union[str,Path]) -> dict:
     """
     Load a probe dataset from an HDF5 file.
 
@@ -64,8 +65,8 @@ def load_dataset(path: str | Path) -> dict:
     return data
 
 
-def save_dataset(path: str | Path, latents: dict, gt_distance: np.ndarray,
-                 observations: np.ndarray | None = None):
+def save_dataset(path: Union[str,Path], latents: dict, gt_distance: np.ndarray,
+                observations: Optional[np.ndarray] = None):
     """Save a probe dataset to HDF5. Called by the data collection script."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -96,10 +97,10 @@ def split_indices(n: int, train: float = 0.7, val: float = 0.15, seed: int = 42)
 
 def make_mock_dataset(
     n_samples: int = 3000,
-    layer_dims: dict | None = None,
-    distance_range: tuple = (1.0, 60.0),
+    layer_dims: Optional[Dict] = None,
+    distance_range: Tuple[float,float] = (1.0, 60.0),
     seed: int = 0,
-    save_path: str | Path | None = None,
+    save_path: Optional[Union[str, Path]] = None,
 ) -> dict:
     """
     Generate synthetic data that mimics a TransFuser-like architecture.
