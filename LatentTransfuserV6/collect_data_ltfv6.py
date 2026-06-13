@@ -27,7 +27,7 @@ import json
 import os
 import pickle
 import sys
-
+import cv2
 import h5py
 import numpy as np
 import torch
@@ -42,6 +42,26 @@ from ltfv6 import load_tf, NavsimData, TrainingConfig  # noqa: E402
 # (under autocast); without autocast we'd get a weight/activation dtype mismatch.
 TrainingConfig.torch_float_type = property(lambda self: torch.float32)
 
+class RobustNavsimData(NavsimData):
+    """NavsimData that handles camera_feature stored as either bytes or uint8 tensor."""
+    def __getitem__(self, index):
+        import gzip, pickle
+        feature_path = self.feature[index]
+        with gzip.open(feature_path, "rb") as f:
+            feature = pickle.load(f)
+
+        cam = feature["camera_feature"]
+        if isinstance(cam, torch.Tensor):
+            cam = cam.numpy()          # uint8 tensor → numpy array, cv2 can decode directly
+        rgb = cv2.imdecode(cam, cv2.IMREAD_COLOR)
+        rgb = np.transpose(rgb, (2, 0, 1))
+
+        return {
+            "rgb": rgb,
+            "command": feature["status_feature"][:4],
+            "speed": np.linalg.norm(feature["status_feature"][4:6]),
+            "acceleration": np.linalg.norm(feature["status_feature"][6:8]),
+        }
 
 # 18 hook points
 HOOK_LAYERS = [
@@ -126,9 +146,9 @@ def compute_distance_labels(target):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_root", default=f"{LTFV6_DIR}/data",
+    parser.add_argument("--data_root", default=f"/ocean/projects/cis250201p/jjain2/lead/data/navsim_training_cache/navtest",
                         help="Directory tree containing transfuser_feature.gz / _target.gz")
-    parser.add_argument("--out", default=f"{LTFV6_DIR}/latents_ltfv6.h5",
+    parser.add_argument("--out", default=f"/ocean/projects/cis250201p/jjain2/data/latents_ltfv6_navtest.h5",
                         help="Output HDF5 path")
     parser.add_argument("--max_samples", type=int, default=None,
                         help="Optional limit on samples processed (for testing)")
@@ -150,7 +170,7 @@ def main():
     with open(f"{LTFV6_DIR}/config.json") as f:
         cfg_dict = json.load(f)
     cfg = TrainingConfig(cfg_dict)
-    dataset = NavsimData(args.data_root, cfg)
+    dataset = RobustNavsimData(args.data_root, cfg)
     n_total = len(dataset)
     n = min(args.max_samples, n_total) if args.max_samples else n_total
     print(f"[setup] {n_total} samples in {args.data_root}; processing {n}")
@@ -240,6 +260,8 @@ def main():
         h5.attrs["data_root"] = args.data_root
         h5.attrs["n_samples"] = n
         h5.attrs["hook_layers"] = "\n".join(HOOK_LAYERS)
+        h5.attrs["split"] = "navtest"
+
 
     # quick summary
     with h5py.File(args.out, "r") as h5:
