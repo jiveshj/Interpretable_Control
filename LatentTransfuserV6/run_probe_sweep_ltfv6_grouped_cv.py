@@ -166,7 +166,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--h5",    default=H5_DEFAULT)
     p.add_argument("--label", default="dist_nearest_front",
-                   choices=["dist_nearest_any", "dist_nearest_front"])
+                   choices=["dist_nearest_any", "dist_nearest_front", "dist_nearest_front_halfplane"])
     p.add_argument("--out",   default=OUT_DEFAULT)
     args = p.parse_args()
 
